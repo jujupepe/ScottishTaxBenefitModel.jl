@@ -168,16 +168,16 @@ end
 # =============================================================================
 
 """
-    calc_behavioural_response(results, sys_baseline, sys_reform) 
+    calc_behavioural_response(df_baseline, df_reform , sys_baseline, sys_reform)
 
 Calculate aggregate income tax revenue change due to behavioural responses
 using the SFC TIE/AETR methodology.
 
-Only call this function when comparing two different tax systems - use the 
-@assert to verify policy has changed before calling.
+Only call this function when comparing two different tax systems.
 
 # Arguments
-- `results`: Microsimulation results containing `.income[1]` (baseline) and `.income[2]` (reform)
+- `df_baseline`: ?? sys1
+- `df_reform`: ?? sys2
 - `sys_baseline`: Baseline tax system parameters
 - `sys_reform`: Reform tax system parameters
 
@@ -185,9 +185,7 @@ Only call this function when comparing two different tax systems - use the
 rows for each TIE band plus a TOTAL row as a DataFrame
 
 # To call within a script (after the model has run) use for example:
-aggregate, by_band = calc_behavioural_response(results, sys1, sys2)
-... and then display using
-Data.Table( BehaviouralResult )
+?? [To be added an example ]
 
 """
 function calc_behavioural_response(
@@ -236,7 +234,22 @@ function calc_behavioural_response(
     band_indices = [lookup_band_index(x, TIE_EDGES) for x in taxable_baseline]
     
     # === INTENSIVE MARGIN (METR/TIE effect) ===
-    taxable_change = @. tie * mrr_pct_change * taxable_baseline
+    
+    # FIXME
+    # move threshold calculation up here
+    # change to add back PA
+    # calculate percentage change
+    # change back to taxable. addition unless in bracket PA gets phased off 
+    # limit change to lower threshold
+
+    # max_taxable_change = @. tie * mrr_pct_change * taxable_baseline # needs edited probably
+    # or max_gross_change = @. tie * mrr_pct_change * gross_baseline [to be defined]
+    # and then max_taxable_change = some function on max_gross_change to account for PA changes
+    
+    # taxable_change = (taxable_baseline - max_taxable_change) >  relevant_threshold ? max_taxable_change : (taxable_baseline - relevant_threshold)
+
+    taxable_change = @. tie * mrr_pct_change * taxable_baseline # needs edited probably
+
     intensive_change = @. taxable_change * mtr_reform
     
     # === EXTENSIVE MARGIN (AETR effect) ===
