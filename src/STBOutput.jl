@@ -44,8 +44,12 @@ export
     irdiff,
     make_gain_lose,
     make_poverty_line,
+    restore_frames,
     summarise_frames!,
-    DUMP_FILE_DESCRIPTION
+    DUMP_FILE_DESCRIPTION,
+    METR_TABLE_BREAKS,
+    METR_TABLE_BREAK_LABELS
+
 
 const DUMP_FILE_DESCRIPTION = 
 """
@@ -153,7 +157,7 @@ end
 
 
 # count of the aggregates added to the income_frame - total benefits and so on, plus 8 indirect fields
-const EXTRA_INC_COLS = 30
+const EXTRA_INC_COLS = 31
 
 
 function make_incomes_frame( RT :: DataType, n :: Int; id = 1 ) :: DataFrame
@@ -191,6 +195,8 @@ function make_incomes_frame( RT :: DataType, n :: Int; id = 1 ) :: DataFrame
     frame.it_savings_taxable = zeros( n )
     frame.it_non_savings_taxable = zeros( n )
     frame.it_dividends_taxable  = zeros( n )
+    frame.it_pension_relief_at_source = zeros(n)
+
     # tax end bands 
     frame.it_dividend_band = zeros(Int,n) # kinda sorta - not normally expressed like this.
     frame.it_savings_band = zeros(Int,n)
@@ -263,6 +269,7 @@ function make_individual_results_frame( RT :: DataType, n :: Int ) :: DataFrame
         ni_class_2  = zeros(RT,n),
         ni_class_3  = zeros(RT,n),
         ni_class_4  = zeros(RT,n),
+        # these 2 are set to missing by default so we can easily skip children, oaps ..
         assumed_gross_wage = Vector{Union{Real,Missing}}(missing, n),         
         metr = Vector{Union{Real,Missing}}(missing, n),
         tax_credit = zeros(RT,n),
@@ -524,6 +531,7 @@ function fill_inc_frame_row!(
     ir.it_savings_taxable = pres.it.savings_taxable
     ir.it_non_savings_taxable = pres.it.non_savings_taxable
     ir.it_dividends_taxable  = pres.it.dividends_taxable 
+    ir.it_pension_relief_at_source = ir.pension_relief_at_source
 
     ir.it_dividend_band = pres.it.dividend_band
     ir.it_savings_band = pres.it.savings_band
@@ -541,7 +549,7 @@ function fill_inc_frame_row!(
     ir.age_band = age_range( pers.age )
     ir.is_child = from_child_record
     ir.employers_ni = pres.ni.class_1_secondary
-    ir.net_cost = isum( pres.income, NET_COST ) + ir.pension_relief_at_source
+    ir.net_cost = isum( pres.income, NET_COST )
     
 end
 
@@ -586,7 +594,7 @@ function fill_pers_frame_row!(
     pr.ni_class_3  = pres.ni.class_3
     pr.ni_class_4  = pres.ni.class_4
     pr.assumed_gross_wage = pres.ni.assumed_gross_wage
-    if pres.metr != -12345.0 # missing indicator
+    if pres.metr != SKIPPED_CALCULATION # missing indicator - keep underyling value at 'missing' otherwise.
         pr.metr = pres.metr
     end
     pr.replacement_rate = pres.replacement_rate        
@@ -772,6 +780,9 @@ function make_gain_lose_static(
     (; ten_gl, children_gl )
 end
 
+vmean(x,y) = mean(x,Weights(y))
+pmean(x,weight,count) = mean(x,Weights(weight.*count))
+
 """
 Convoluted approach to making an IFS style Gain-Lose table
 @param dhh - a little frame with a bunch of categories and a net-income field (change)
@@ -826,16 +837,23 @@ function one_gain_lose( dhh :: DataFrame, col :: Symbol ) :: Tuple{DataFrame,Dat
     ns = Symbol.(colnames)
     select!( sort!(vhh, col), ns... )
     # average change table, grouped by col 
+    # FIXME refactor to get rid of using weighted_xx cols
     gavch = combine( groupby( dhh, [col]),
         (:people_weighted_change=>sum), # changes in selected income var * hhweight * people count
         (:weighted_people=>sum), # hh weight * people count
         (:weight=>sum),          # sum of hh weights
         (:weighted_bhc_change=>sum ),
         (:weighted_pre_income=>sum ),
-        (:weighted_post_income=>sum ))     # sum of bhc changes 
+        ([:pct_change,:weight,:hh_type]=>pmean=>:pct_change),
+        (:people_weighted_pre_income=>sum ),
+        (:people_weighted_post_income=>sum ),
+        (:weighted_post_income=>sum ))     # sum of bhc changes
     gavch.avch = gavch.people_weighted_change_sum ./ gavch.weighted_people_sum # => average change for each group per person
-    gavch.total_transfer = WEEKS_PER_YEAR.*gavch.weighted_bhc_change_sum./1_000_000 # total moved to/from that group £spa
-    gavch.pct_change = 100.0 .* ((gavch.weighted_post_income_sum .- gavch.weighted_pre_income_sum)./gavch.weighted_pre_income_sum)
+    gavch.total_transfer = WEEKS_PER_YEAR.*gavch.weighted_bhc_change_sum./1_000_000 # total moved to/from that group
+    # TEMP overwrite the new pct_change for JP -
+    gavch.pct_change = 100.0 .* ((gavch.people_weighted_post_income_sum .- gavch.people_weighted_pre_income_sum)./gavch.people_weighted_pre_income_sum)
+    # £spa
+    # gavch.pct_change = 100.0 .* ((gavch.weighted_post_income_sum .- gavch.weighted_pre_income_sum)./gavch.weighted_pre_income_sum)
     # ... put av changes in the right order
     sort!( gavch, col )
     vhh.avch = gavch.avch
@@ -903,11 +921,26 @@ end
 const GL_MIN = 0.10
 const MAX_EXAMPLES = 50
 
-function make_gain_lose( 
-    prehh :: DataFrame, 
-    posthh :: DataFrame, 
+
+function pct_change( post::Number, pre::Number)::Number
+    den = if ! (pre ≈ 0)
+        pre
+    elseif ! (post ≈ 0)
+        post
+    else
+        1.0
+    end
+    return 100*(post-pre)/den
+end
+
+function make_gain_lose( ;
+    posthh :: DataFrame,
+    prehh  :: DataFrame,
     incomes_col :: Symbol ) :: NamedTuple
 
+    # FIXME refactor this, since the sums above can cope with summing using the weights column:
+    # e.g this from FarmSim:
+    # ghh = combine( groupby( dhh, [breakdown,:gainlose] ),:weight=>sum)
     dhh = DataFrame( 
         hid = prehh.hid,
         data_year  = prehh.data_year,
@@ -923,8 +956,11 @@ function make_gain_lose(
         change = posthh[:, incomes_col] - prehh[:,incomes_col],
         pre_income = prehh[:,incomes_col],
         post_income = posthh[:,incomes_col],
+        pct_change = pct_change.( posthh[:,incomes_col], prehh[:,incomes_col] ),
         weighted_pre_income = prehh.weight.*prehh[:,incomes_col],
-        weighted_post_income = prehh.weight.*posthh[:,incomes_col])
+        weighted_post_income = prehh.weight.*posthh[:,incomes_col],
+        people_weighted_pre_income = prehh.weighted_people.*prehh[:,incomes_col],
+        people_weighted_post_income = prehh.weighted_people.*posthh[:,incomes_col] )
     dhh.people_weighted_change = (dhh.change .* dhh.weighted_people) # for average gains 
     ten_gl, ten_examples = one_gain_lose( dhh, :tenure )
     dec_gl, dec_examples = one_gain_lose( dhh, :decile )
@@ -981,15 +1017,35 @@ function make_gain_lose(
         popn = popn)
 end
 
-function make_gain_lose( post :: DataFrame, pre :: DataFrame, settings :: Settings )::NamedTuple
+#=
+function make_gain_lose(; prehh :: DataFrame, posthh :: DataFrame, settings :: Settings )::NamedTuple
     income = income_measure_as_sym( settings.ineq_income_measure )
-    return make_gain_lose( post, pre, income )
+    return make_gain_lose( prehh=prehh, posthh=posthh, incomes_col=income )
 end
+=#
+
+const METR_TABLE_BREAKS = [-Inf, 0.0000, 0.0001, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 100.001, Inf]
+const METR_TABLE_BREAK_LABELS = [
+    "Less than zero",
+    "Zero",
+    "0.01-9.99",
+    "10-19.99",
+    "20-29.99",
+    "30-39.99",
+    "40-49.99",
+    "50-59.99",
+    "60-69.99",
+    "70-79.99",
+    "80-89.99",
+    "90-99.99",
+    "100",
+    "Above 100"
+    ]
 
 """
 Produce data for Metrs as a bar chart, plus mean, median
 """
-function metrs_to_hist( indiv :: DataFrame ) :: NamedTuple
+function metrs_to_hist( indiv :: DataFrame; breaks=METR_TABLE_BREAKS ) :: NamedTuple
     # these 2 convoluted lines make this draw only
     # over the non-missing (children, retired)
     p = collect(keys(skipmissing( indiv.metr )))
@@ -999,11 +1055,11 @@ function metrs_to_hist( indiv :: DataFrame ) :: NamedTuple
     # skip near-infinite mrs mwhen averaging
     maxmtr = maximum(indp.metr)
     minmtr = minimum(indp.metr)
-    sensible = indp[(indp.metr.<150),:]
+    sensible = indp[(abs.(indp.metr) .< 200),:]
     if size(sensible)[1] > 0
         medmtr = median( sensible.metr, Weights(sensible.weight))
         meanmtr = mean( sensible.metr, Weights(sensible.weight))
-        hist = fit( Histogram, indp.metr, Weights( indp.weight ), [-Inf, 0.0000, 10.0, 20.0, 30.0, 50.0, 80.0, 100.0, Inf], closed=:left )
+        hist = fit( Histogram, indp.metr, Weights( indp.weight ), breaks, closed=:left )
     end
     return ( max=maxmtr, min=minmtr, median=medmtr, mean=meanmtr, hist=hist)
 end
@@ -1121,6 +1177,31 @@ function income_hists_to_df( incs :: Vector )::DataFrame
 end
 
 """
+FIXME copy of `income_hists_to_df
+"""
+function metrs_to_df( metrs :: Vector )::DataFrame
+    # 'Any' so we can add strings at the bottom
+    v = Any[copy(metrs[1].hist.edges[1][2:end])... ]
+    push!(v,"mean" )
+    push!(v,"median")
+    push!(v,"min")
+    push!(v,"max")
+    d = DataFrame( edges_upper_limit=v )
+    n = length(metrs)
+    for i in 1:n
+        v = copy( metrs[i].hist.weights )
+        push!(v,metrs[i].mean )
+        push!(v,metrs[i].median)
+        push!(v,metrs[i].min)
+        push!(v,metrs[i].max)
+        sy = Symbol( "population_$i")
+        d[!,sy] = v
+    end
+    return d
+end
+
+
+"""
 Overall summary table made from summary.income_summary tables, with 1 being the base.
 Transpose the 1st three rows of that table. Assumes there's a col `label` at the end
 and that the totals are in the 1st 3 rows. This will break badly
@@ -1223,7 +1304,8 @@ function make_headline_figures(
     income_hists2 :: NamedTuple,
     metrs1 :: Union{Nothing,NamedTuple},
     metrs2 :: Union{Nothing,NamedTuple},
-     )::NamedTuple
+    child_poverty1 :: GroupPoverty,
+    child_poverty2 :: GroupPoverty )::NamedTuple
     r1 = income_summary1[1,:]
     r2 = income_summary2[1,:]
     net1 = r1.net_inc_indirect
@@ -1255,6 +1337,7 @@ function make_headline_figures(
     end
     Δtax = tax2 - tax1
     Δben = ben2 - ben1
+
     return (; 
         gainers = gain_lose.gainers,
         losers = gain_lose.losers,
@@ -1283,11 +1366,16 @@ function make_headline_figures(
         pov_headcount2,
         Δtax,
         Δben,
+        net1,
+        net2,
         net_cost = net1 - net2, # note 1-2 here
         net_direct = Δtax - Δben, 
         Δpalma = palma2 - palma1,
         Δgini = gini2 - gini1,
-        Δpov_headcount = pov_headcount2 - pov_headcount1 )
+        Δpov_headcount = pov_headcount2 - pov_headcount1,
+        child_poverty1 = child_poverty1.prop,
+        child_poverty2 = child_poverty2.prop,
+        Δchild_poverty = child_poverty2.prop - child_poverty1.prop )
 end
 
 function decs_to_df( onedec :: Matrix )::DataFrame
@@ -1429,9 +1517,9 @@ function summarise_frames!(
         for sysno in 1:ns 
             push!( gain_lose,
                 make_gain_lose( 
-                    frames.hh[1], # FIXME add setting for comparison system
-                    frames.hh[sysno],
-                    income_measure )) 
+                    posthh=frames.hh[sysno],
+                    prehh=frames.hh[1], # FIXME add setting for comparison system
+                    incomes_col=income_measure ))
         end
         println( "gain lose")
     end    
@@ -1467,9 +1555,16 @@ function summarise_frames!(
             income_hists[1],
             income_hists[sysno],
             metrs1,
-            metrs2 ))
+            metrs2,
+            child_poverty[1],
+            child_poverty[sysno]))
     end
     income_hists_df = income_hists_to_df( income_hists )
+    metrs_df = if settings.do_marginal_rates
+        metrs_to_df( metrs )
+    else
+       DataFrame()
+    end
     return ( ;
         headline_figures,
         quantiles, 
@@ -1480,6 +1575,7 @@ function summarise_frames!(
         poverty, 
         inequality, 
         metrs, 
+        metrs_df,
         child_poverty,
         gain_lose,
         poverty_lines,
@@ -1582,29 +1678,77 @@ function dump_summaries( settings :: Settings, summary :: NamedTuple )
     if settings.do_legal_aid
         LegalAidOutput.dump_tables( summary.legalaid, settings; num_systems=nc )            
     end
+    if settings.do_marginal_rates
+        CSV.write( joinpath( outdir, "metrs-histogram-df.csv"), summary.metrs_df )
+    end
 end
 
 """
-Dump the raw dataframes to a directory make from settings.output dir and the run name.
+Restore the main output frames saved with `dump_frames`.
+"""
+function restore_frames( dir :: AbstractString, num_systems :: Integer )::NamedTuple
+    frames = (;
+        hh = DataFrame[],
+        bu = DataFrame[],
+        indiv = DataFrame[],
+        income = DataFrame[],
+        behavioural_results = DataFrame[])
+    for fno in 1:num_systems
+        fname = joinpath( dir, "hh_$(fno).csv")
+        push!(frames.hh, CSV.File( fname, delim=',') |> DataFrame )
+        fname = joinpath( dir, "bu_$(fno).csv")
+        push!( frames.bu, CSV.File( fname; delim=',') |> DataFrame )
+        fname = joinpath( dir, "indiv_$(fno).csv")
+        push!( frames.indiv, CSV.File( fname; delim=',') |> DataFrame )
+        fname = joinpath( dir, "income_$(fno).csv")
+        push!( frames.income, CSV.File( fname; delim=',') |> DataFrame )
+        fname = joinpath( dir, "sfc-behavioural_adjustments-$(fno)-vs-1.csv")
+        push!(frames.behavioural_results, CSV.File( fname; delim=',') |> DataFrame )
+    end
+    return frames;
+end
+
+"""
+Write the main disaggregated dataframes to files in `outdir` in CSV format.
+Files currently are:
+
+* hh_<fno>.csv
+* bu_<fno>.csv (not really used)
+* indiv<fno>.csv
+* income<fno>.csv
+* "sfc-behavioural_adjustments-<fno>-vs-1.csv
+
+where `fno` is 1 ... num systems
+
+"""
+function dump_frames(
+    outdir :: AbstractString,
+    frames :: NamedTuple;
+    append :: Bool = false )
+    ns = size( frames.indiv )[1] # num systems
+    mkpath( outdir )
+    for fno in 1:ns
+        fname = joinpath( outdir, "hh_$(fno).csv")
+        CSV.write( fname, frames.hh[fno]; append=append,delim=',')
+        fname = joinpath( outdir, "bu_$(fno).csv")
+        CSV.write( fname, frames.bu[fno]; append=append, delim=',')
+        fname = joinpath( outdir, "indiv_$(fno).csv")
+        CSV.write( fname, frames.indiv[fno];append=append, delim=',')
+        fname = joinpath( outdir, "income_$(fno).csv")
+        CSV.write( fname, frames.income[fno]; delim=',')
+        CSV.write( joinpath( outdir, "sfc-behavioural_adjustments-$(fno)-vs-1.csv"), frames.behavioural_results[fno] )        
+    end
+end
+
+"""
+Dump the raw output dataframes to a directory made from settings.output dir and the run name.
 """
 function dump_frames(
     settings :: Settings,
     frames :: NamedTuple;
     append :: Bool = false )
-    ns = size( frames.indiv )[1] # num systems
-    outdir = joinpath( settings.output_dir, basiccensor( settings.run_name )) 
-    mkpath( outdir )
-    for fno in 1:ns
-        fname = joinpath( outdir, "hh_$(fno).csv")
-        CSV.write( fname, frames.hh[fno] ; append=append,delim=',')
-        fname = joinpath( outdir, "bu_$(fno).csv")
-        CSV.write( fname, frames.bu[fno]; append=append,delim=',' )
-        fname = joinpath( outdir, "indiv_$(fno).csv")
-        CSV.write( fname, frames.indiv[fno];append=append,delim=',' )
-        fname = joinpath( outdir, "income_$(fno).csv")
-        CSV.write( fname, frames.income[fno]; append=append,delim=',' )        
-        CSV.write( joinpath( outdir, "sfc-behavioural_adjustments-$(fno)-vs-1.csv"), frames.behavioural_results[fno] )        
-    end
+    outdir = joinpath( settings.output_dir, basiccensor( settings.run_name ))
+    dump_frames( outdir, frames; append=append )
 end
 
 end # Module STBOutput

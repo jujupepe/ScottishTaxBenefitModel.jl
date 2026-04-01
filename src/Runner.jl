@@ -126,7 +126,7 @@ module Runner
         end
         start,stop = make_start_stops( settings.num_households, num_threads )
         frames :: NamedTuple = initialise_frames( T, settings, num_systems )
-        observer[] =Progress( settings.uuid, "starting",0, 0, 0, settings.num_households )
+        observer[] = Progress( settings.uuid, "starting",0, 0, 0, settings.num_households )
         @time @threads for thread in 1:num_threads
             for hno in start[thread]:stop[thread]
                 hh = FRSHouseholdGetter.get_household( hno )
@@ -142,6 +142,7 @@ module Runner
                                 #
                                 # `from_child_record` sorts out 17+ in education.
                                 #
+                                pres = get_indiv_result( res, pid )
                                 if include_for_mr( settings, pers )
                                     # FIXME choose between SE and Wage depending on which is
                                     # bigger, or empoyment status
@@ -157,13 +158,16 @@ module Runner
                                     subres = do_one_calc( hh, params[sysno], settings )            
                                     subhhinc = get_net_income( subres; target=settings.target_mr_rr_income )
                                     hhinc = get_net_income( res; target=settings.target_mr_rr_income )
-                                    pres = get_indiv_result( res, pid )
-                                    pres.metr = round( 
+                                    pres.metr = round(
                                         100.0 * (1-((subhhinc-hhinc)/settings.mr_incr)),
-                                        digits=7 )                           
+                                        digits=7 )
+                                    # set the recorded wage back to pre-increment level
                                     pers.income[target_income] -= settings.mr_incr                        
                                     # println( "wage set back to $(pers.income[wages]) metr is $(pres.metr)")
+                                else
+                                    pres.metr = SKIPPED_CALCULATION
                                 end # working age
+
                             end # people
                         end # mrs
                         if settings.do_replacement_rates
