@@ -28,7 +28,7 @@ using .Runner: do_one_run
 using .Definitions
 import .ExampleHouseholdGetter
 using .STBOutput: make_poverty_line, summarise_inc_frame, 
-    dump_frames, summarise_frames!, make_gain_lose
+    dump_frames, summarise_frames!, make_gain_lose, dump_summaries
 
 using .RunSettings: Settings, get_all_uk_settings_2023
 
@@ -192,7 +192,7 @@ of = on(obs) do p
     println(tot)
 end
 
-function do_basic_run( settings :: Settings, sys :: Vector; reset :: Bool ) :: Tuple
+function do_basic_run( settings :: Settings, sys :: Vector; reset = false ) :: Tuple
    global tot
    tot = 0
    # force reset of data to use UK dataset
@@ -202,8 +202,8 @@ function do_basic_run( settings :: Settings, sys :: Vector; reset :: Bool ) :: T
    h1 = results.hh[1]
    settings.poverty_line = make_poverty_line( results.hh[1], settings )
    dump_frames( settings, results )
-   println( "poverty line = $(settings.poverty_line)")
    summary = summarise_frames!( results, settings )
+   dump_summaries( settings, summary )
    return (summary, results, settings )
 end
 

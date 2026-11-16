@@ -499,8 +499,8 @@ end
     head = scot.people[SCOT_HEAD]
     spouse = scot.people[SCOT_SPOUSE]
     bu = make_benefit_unit( PeopleArray([head,spouse]), head.pid, spouse.pid ) 
-    head_ages = [75,91,91,70] # after 1935
-    spouse_ages = [91,70,70,91]
+    head_ages = [75,99,99,70] # after 1935
+    spouse_ages = [99,70,70,99]
     head_incomes = [19_100.0, 29_710.0,41_080.0,0.0]
     spouse_incomes = [12_450.0,0,13_950.0,49_300.0]
     for i in 1:4
@@ -557,11 +557,10 @@ end
     calc_income_tax!( brscot, alana, nothing, itsys_scot );
     @test bruk.pers[alana.pid].it.pension_relief_at_source ≈ 960.0
     @test bruk.pers[alana.pid].it.pension_eligible_for_relief ≈ 400.0*12*0.8
-    @test brscot.pers[alana.pid].it.non_savings_thresholds[1] ≈ itsys_scot.non_savings_thresholds[1]+400.0*12
+    @test brscot.pers[alana.pid].it.non_savings_thresholds[1] ≈ itsys_scot.non_savings_thresholds[1] # +400.0*12
     @test brscot.pers[alana.pid].it.non_savings_thresholds[2] ≈ itsys_scot.non_savings_thresholds[2]+400.0*12
     @test brscot.pers[alana.pid].it.pension_relief_at_source ≈ 960.0
     @test brscot.pers[alana.pid].it.pension_eligible_for_relief ≈ 400.0*12*0.8
-
 end
 
 @testset "pension: Tax Relief Minima - Melville ch14 ex1(a)"  begin

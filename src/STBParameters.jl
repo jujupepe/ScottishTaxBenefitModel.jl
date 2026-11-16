@@ -647,6 +647,7 @@ end
     abolished = false
     amounts = [RT(10.0),RT(0)]
     maximum_ages = [5,99]
+    max_num_children = 99
     qualifying_benefits = [
         CHILD_TAX_CREDIT,
         UNIVERSAL_CREDIT,
@@ -1092,6 +1093,7 @@ function weeklyise!( uc :: UniversalCreditSys; wpm=WEEKS_PER_MONTH, wpy=WEEKS_PE
     uc.work_allowance_no_housing /= wpm
 
 end
+
 @with_kw mutable struct UBISys{RT}
     # numbers from "horizon 3; 2019 values"
     abolished :: Bool = true
@@ -1100,7 +1102,7 @@ end
     universal_pension :: RT = 8_780.0
     adult_age :: Int = 17
     retirement_age :: Int = 66
-    mt_bens_treatment :: UBIMTBenTreatment = ub_abolish
+    mt_bens_treatment :: UBIMTBenTreatment = ub_as_is
     abolish_sickness_bens :: Bool = false
     abolish_pensions :: Bool = true
     abolish_jsa_esa :: Bool = true
@@ -1329,6 +1331,9 @@ function make_ubi_pre_adjustments!( sys :: TaxBenefitSystem )
         sys.nmt_bens.maternity.abolished = true
         sys.nmt_bens.bereavement.abolished = true
         sys.nmt_bens.widows_pension.abolished = true
+        sys.nmt_bens.smp = 0.0
+        # sys.nmt_bens.scdp.abolished = true
+        sys.nmt_bens.winter_fuel.abolished  = true
     end
 end
 

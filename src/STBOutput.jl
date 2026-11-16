@@ -46,10 +46,7 @@ export
     make_poverty_line,
     restore_frames,
     summarise_frames!,
-    DUMP_FILE_DESCRIPTION,
-    METR_TABLE_BREAKS,
-    METR_TABLE_BREAK_LABELS
-
+    DUMP_FILE_DESCRIPTION
 
 const DUMP_FILE_DESCRIPTION = 
 """
@@ -155,10 +152,8 @@ function make_individual_results_frame( n :: Int ) :: DataFrame
     make_individual_results_frame( Float64, n )
 end
 
-
 # count of the aggregates added to the income_frame - total benefits and so on, plus 8 indirect fields
 const EXTRA_INC_COLS = 31
-
 
 function make_incomes_frame( RT :: DataType, n :: Int; id = 1 ) :: DataFrame
     frame :: DataFrame = create_incomes_dataframe( RT, n )
@@ -280,7 +275,6 @@ function make_individual_results_frame( RT :: DataType, n :: Int ) :: DataFrame
         has_mental_health_problem = fill( false, n ),
         qualys = zeros( RT, n ),
         life_expectancy = zeros(RT, n ))
-
 end
 
 function irdiff( d1 :: DataFrame, d2 :: DataFrame )
@@ -550,7 +544,6 @@ function fill_inc_frame_row!(
     ir.is_child = from_child_record
     ir.employers_ni = pres.ni.class_1_secondary
     ir.net_cost = isum( pres.income, NET_COST )
-    
 end
 
 function fill_pers_frame_row!(
@@ -719,69 +712,31 @@ function gl( vf :: Number ) :: String
     end
 end
 
-function one_gain_losesz( size :: Int ) :: DataFrame
-    d = DataFrame()
-    d.Name = [] 
-    n = 0
-    for i in 1:n
-        push!(d.Name,i)
-    end
-    for c in GL_COLNAMES
-        d[:,Symbol(c)] = zeros(n)
-    end
-    d.Total = zeros(n)
-    d
-end
-
-function one_gain_lose_df( T :: Type ) :: DataFrame
-    d = DataFrame()
-    d.Name = [] 
-    n = 0
-    for i in instances(T)
-        push!( d.Name, i )
-        n += 1
-    end
-    for c in GL_COLNAMES
-        d[:,Symbol(c)] = zeros(n)
-    end
-    d.Total = zeros(n)
-    d
-end
-
-"""
-NOT USED
-"""
-function make_gain_lose_static( 
-    prehh :: DataFrame, 
-    posthh :: DataFrame, 
-    incomes_col :: Symbol ) :: NamedTuple
-    ten_gl = one_gain_lose_df( Tenure_Type )
-    children_gl = one_gain_losez( 10 )
-
-    @assert size( prehh ) == size( posthh )
-    nrs = size( prehh )[1]
-    for i in 1:nrs
-        ten = prehh[i,:tenure]
-        nkids = prehh[i,:num_children]
-        gain = posthh[i, incomes_col] - prehh[i,incomes_col]
-        changecol = Symbol( gl( gain ))
-        ten_gl[ten .== ten_gl.name,changecol] .= prehh.weighted_people
-        ten_gl[ten .== ten_gl.name].Total .= prehh.weighted_people
-        children_gl[nkids .== children_gl.name,changecol] .= prehh.weighted_people
-        children_gl[nkids .== children_gl.name].Total .= prehh.weighted_people
-
-    end
-    #=
-    ten_gl = one_gain_lose_df( :tenure )
-    dec_gl = one_gain_lose_df( :decile )
-    children_gl = one_gain_lose_df( 7 )
-    hhtype_gl = one_gain_lose_df( dhh, :hh_type )
-    =#   
-    (; ten_gl, children_gl )
-end
-
 vmean(x,y) = mean(x,Weights(y))
 pmean(x,weight,count) = mean(x,Weights(weight.*count))
+
+
+"""
+In-place add a totals row and a population column to a gain/lose table (see below).
+FIXME are pct_change and avchange totals consistent? - we use weighted values of the cols
+"""
+function add_totals_to_gl!( gld :: AbstractDataFrame )
+    nrows,ncols = size(gld)
+    # 1st row is sometimes and enum or int - coerce into String
+    gld[!,1] = string.(gld[!,1])
+    v = ["Totals",zeros( ncols-1)...]
+    for c in 2:ncols-4
+        v[c] = sum( gld[!,c])
+    end
+    tt = sum( gld.total_transfer )
+    tp = sum( gld.population )
+    v[ncols-2] = mean( gld.avch, Weights( gld.population )) # avch = 1000000*tt/(tp*WEEKS_PER_YEAR)
+    v[ncols-3] = tp
+    v[ncols-1] = mean( gld.pct_change, Weights( gld.population ))
+    v[ncols] = tt
+    push!( gld, v )
+end
+
 
 """
 Convoluted approach to making an IFS style Gain-Lose table
@@ -844,26 +799,26 @@ function one_gain_lose( dhh :: DataFrame, col :: Symbol ) :: Tuple{DataFrame,Dat
         (:weight=>sum),          # sum of hh weights
         (:weighted_bhc_change=>sum ),
         (:weighted_pre_income=>sum ),
-        ([:pct_change,:weight,:hh_type]=>pmean=>:pct_change),
+        ([:pct_change,:weight,:hh_type]=>pmean=>:pct_change), # hhtype here is just the count of people
         (:people_weighted_pre_income=>sum ),
         (:people_weighted_post_income=>sum ),
         (:weighted_post_income=>sum ))     # sum of bhc changes
-    gavch.avch = gavch.people_weighted_change_sum ./ gavch.weighted_people_sum # => average change for each group per person
+    # gavch.avch = gavch.people_weighted_change_sum ./ gavch.weighted_people_sum # => average change for each group per person
     gavch.total_transfer = WEEKS_PER_YEAR.*gavch.weighted_bhc_change_sum./1_000_000 # total moved to/from that group
-    # TEMP overwrite the new pct_change for JP -
+    gavch.avch = (gavch.people_weighted_post_income_sum .- gavch.people_weighted_pre_income_sum) ./ gavch.weighted_people_sum # => average change for each group per person
     gavch.pct_change = 100.0 .* ((gavch.people_weighted_post_income_sum .- gavch.people_weighted_pre_income_sum)./gavch.people_weighted_pre_income_sum)
-    # £spa
     # gavch.pct_change = 100.0 .* ((gavch.weighted_post_income_sum .- gavch.weighted_pre_income_sum)./gavch.weighted_pre_income_sum)
     # ... put av changes in the right order
     sort!( gavch, col )
+    vhh.population = gavch.weighted_people_sum
     vhh.avch = gavch.avch
     vhh.pct_change = gavch.pct_change
     vhh.total_transfer = gavch.total_transfer
     # remove missing: Do we need this?
     glf = coalesce.( vhh, 0.0)
+    add_totals_to_gl!( glf )
     # add an average change column
     colstr = pretty(string(col))
-
     metadata!( glf, "caption", "Table of Gainers and Losers by $colstr - Counts of Individuals."; style=:note)
     colmetadata!( glf, :pct_change,"label", "% Change In Income."; style=:note)
     colmetadata!( glf, :avch,"label", "Average Change In £s pw."; style=:note)
@@ -896,7 +851,7 @@ function make_povtrans_matrix(
     end
 
     @assert size(indiv1) == size(indiv2)
-    @assert indiv1.weight ≈ indiv1.weight
+    @assert indiv1.weight ≈ indiv2.weight
     nrows, ncols = size( indiv1 )
     trans = zeros(6,6)
     isym = income_measure_as_sym( settings.ineq_income_measure )
@@ -917,8 +872,7 @@ function make_povtrans_matrix(
     return trans
 end
 
-
-const GL_MIN = 0.10
+const GL_MIN = 1.01
 const MAX_EXAMPLES = 50
 
 
@@ -970,8 +924,8 @@ function make_gain_lose( ;
     # FIXME this is vvv problematic
     poverty_gl, poverty_examples = one_gain_lose( dhh, :in_poverty )
     # some overall changes - easier way?
-    gainers = sum( dhh[dhh.change .> GL_MIN, :weighted_people] )
-    losers = sum( dhh[dhh.change .< -GL_MIN, :weighted_people] )
+    gainers = sum( dhh[dhh.change .>= GL_MIN, :weighted_people] )
+    losers = sum( dhh[dhh.change .<= -GL_MIN, :weighted_people] )
     # sample gain/lose
     ex_gainers = Array{OneIndex}(undef,MAX_EXAMPLES)
     n_gainers = 0
@@ -1017,52 +971,62 @@ function make_gain_lose( ;
         popn = popn)
 end
 
-#=
-function make_gain_lose(; prehh :: DataFrame, posthh :: DataFrame, settings :: Settings )::NamedTuple
-    income = income_measure_as_sym( settings.ineq_income_measure )
-    return make_gain_lose( prehh=prehh, posthh=posthh, incomes_col=income )
+function trans_mat_to_df( m :: Matrix, labels :: Vector ) :: DataFrame
+    df = DataFrame( m, labels )
+    insertcols!(df,1,""=>METR_TABLE_BREAK_LABELS)
+    return df
 end
-=#
-
-const METR_TABLE_BREAKS = [-Inf, 0.0000, 0.0001, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 100.001, Inf]
-const METR_TABLE_BREAK_LABELS = [
-    "Less than zero",
-    "Zero",
-    "0.01-9.99",
-    "10-19.99",
-    "20-29.99",
-    "30-39.99",
-    "40-49.99",
-    "50-59.99",
-    "60-69.99",
-    "70-79.99",
-    "80-89.99",
-    "90-99.99",
-    "100",
-    "Above 100"
-    ]
 
 """
-Produce data for Metrs as a bar chart, plus mean, median
+Produce data for Metrs as a bar chart, plus mean, median, transmat (MR Transition Matrix)
+transmat has pre in rows and post in cols
+
+* indiv_pre - the individual level output DF (including children, pensioners who are removed here) - for crosstab only;
+* indiv_post - the individual level output DF (including children, pensioners who are removed here);
+* breaks - see `METR_TABLE_BREAKS` above
+* return: max, min, median, mean, histogram for `ìndiv_pre`,
+    - `transmat_histogram` transitions histogram and matrix for pre vs post;
+    - `transmat` weights part of histogram with row/column totals added;
+    - `transmat_df` transmat cast as dataframe
+
 """
-function metrs_to_hist( indiv :: DataFrame; breaks=METR_TABLE_BREAKS ) :: NamedTuple
-    # these 2 convoluted lines make this draw only
-    # over the non-missing (children, retired)
-    p = collect(keys(skipmissing( indiv.metr )))
-    indp = indiv[p,[:metr, :weight]] # just non missing
-    indp.metr = Float64.(indp.metr) # median doesn't like union{missing,..}
+function metrs_to_hist( indiv_pre::DataFrame, indiv_post::DataFrame; breaks=METR_TABLE_BREAKS, labels=METR_TABLE_BREAK_LABELS ) :: NamedTuple
+    # these 5 convoluted lines make this draw only
+    # over the non-missing (children, retired excluded from MR calcutatioin, but working age non-employed are in)
+    p = union( collect(keys(skipmissing( indiv_pre.metr ))), collect(keys(skipmissing( indiv_post.metr ))))
+    indpre = indiv_pre[p,[:metr, :weight]] # just non missing
+    indpre.metr = Float64.(indpre.metr) # median doesn't like union{missing,..}
+    indpost = indiv_post[p,[:metr, :weight]] # just non missing
+    indpost.metr = Float64.(indpost.metr) # median doesn't like union{missing,..}
     # so .. <=0, >0 <=10, >10<=20 and so on
     # skip near-infinite mrs mwhen averaging
-    maxmtr = maximum(indp.metr)
-    minmtr = minimum(indp.metr)
-    sensible = indp[(abs.(indp.metr) .< 200),:]
+    maxmtr = maximum(indpost.metr)
+    minmtr = minimum(indpost.metr)
+    sensible = indpost[(abs.(indpost.metr) .< 200),:] # cut infinite MRs for means - keep in for the transition matrix
+    m = zeros(0,0)
+    m_df = DataFrame()
     if size(sensible)[1] > 0
         medmtr = median( sensible.metr, Weights(sensible.weight))
         meanmtr = mean( sensible.metr, Weights(sensible.weight))
-        hist = fit( Histogram, indp.metr, Weights( indp.weight ), breaks, closed=:left )
+        hist = fit( Histogram, indpost.metr, Weights( indpost.weight ), breaks, closed=:left )
+        # Same but in 2d pre- post : see Historgram in StatsBase documentation.
+
+        m, row_levs, col_levs, examples = make_crosstab( indiv_pre.metr_band, indiv_post.metr_band; weights=Weights(indiv_pre.weight), max_examples = 3)
+        @show m labels row_levs
+        #=
+        transmat = fit( Histogram, (indpre.metr,indpost.metr), Weights( indpost.weight ), (breaks, breaks), closed=:left )
+        # add row & col totals to transitions matrix
+        m = transmat.weights
+        m = hcat(m,sum(m,dims=2))
+        m = vcat(m,sum(m,dims=1))
+        # idiot check I've got dimensions right
+        @assert m[end,1:end-1] ≈ hist.weights "hist.weights $(hist.weights)  ≈ m col totals $(m[end,1:end-1])"
+        =#
+        m_df = trans_mat_to_df( m, labels )
     end
-    return ( max=maxmtr, min=minmtr, median=medmtr, mean=meanmtr, hist=hist)
+    return ( max=maxmtr, min=minmtr, median=medmtr, mean=meanmtr, hist=hist, transmat_histogram = nothing, transmat=m, transmat_df=m_df, examples )
 end
+
 
 """
 Produce data for HBAI graph clone: hist in £10 blocks, median, truncated at [0,2000).
@@ -1199,7 +1163,6 @@ function metrs_to_df( metrs :: Vector )::DataFrame
     end
     return d
 end
-
 
 """
 Overall summary table made from summary.income_summary tables, with 1 being the base.
@@ -1388,19 +1351,20 @@ function decs_to_df( onedec :: Matrix )::DataFrame
     return d
 end
 
+
 function povtrans_matrix_to_df( pmat :: Matrix )::DataFrame
-    labels = ["V.Deep (<=30%)",
-                "Deep (<=40%)",
-                "In Poverty (<=60%)",
-                "Near Poverty (<=80%)",
-                "Not in Poverty",
-            "Total"]
-    d = DataFrame( pmat, labels )
-    insertcols!(d,1,:""=> labels )
+    d = DataFrame( pmat, POVERTY_LABELS )
+    insertcols!(d,1,:""=> POVERTY_LABELS )
     metadata!(d, "caption", "Movements in and out of poverty (counts of individuals) (Before in cols, after in rows).")
     return d
 end
 
+function mrs_matrix_to_df( pmat :: Matrix )::DataFrame
+    d = DataFrame( pmat, POVERTY_LABELS )
+    insertcols!(d,1,:""=> POVERTY_LABELS )
+    metadata!(d, "caption", "Movements in and out of poverty (counts of individuals) (Before in cols, after in rows).")
+    return d
+end
 
 """
 Make the main summary tables from a set of results dataframes.
@@ -1435,13 +1399,21 @@ function summarise_frames!(
         -1.0 # make sure we crash if not set
     end
 
+    median_income_1 = median( frames.indiv[1][!,income_measure], Weights(frames.indiv[1].weight))
+
     for sysno in 1:ns
         # poverty relative to current system median
         if settings.poverty_line_source == pl_current_sys
             poverty_line = make_poverty_line( frames.hh[sysno], settings )
         end
+
+        frames.indiv[sysno].metr_band = get_metr_band.( frames.indiv[sysno][!,:metr] )
+        frames.indiv[sysno].short_metr_band = sh_get_metr_band.( frames.indiv[sysno][!,:metr] )
+        frames.indiv[sysno].poverty_state = get_poverty_state.( frames.indiv[sysno][!,income_measure], median_income_1 )
+
         if settings.do_marginal_rates
-            push!( metrs, metrs_to_hist( frames.indiv[sysno] ))
+            @show sysno names(frames.indiv[sysno])
+            push!( metrs, metrs_to_hist( frames.indiv[1], frames.indiv[sysno] ))
             println( "metrs to hist done")
         end
         push!( income_hists, incomes_to_hist(
@@ -1586,7 +1558,7 @@ function summarise_frames!(
         taxable_income_hists,
         povtrans_matrix,
         povtrans_matrix_df,
-        legalaid = frames.legalaid )
+        legalaid = frames.legalaid ) # FIXME remove LegalAid hard-wired here
 end
 
 function fm(v, r,c) 
@@ -1623,17 +1595,17 @@ Write everything from the summaries into a directory
 constructed from the settings output filename and the run name.
 Writes CSV for the income summaries and quantiles and markdown for the rest.
 """
-function dump_summaries( settings :: Settings, summary :: NamedTuple )
+function dump_summaries( outdir :: AbstractString, settings :: Settings, summary :: NamedTuple )
     ns = length( summary.income_summary ) # num systems
-    outdir = joinpath( settings.output_dir, basiccensor( settings.run_name )) 
-    mkpath( outdir )
     open(joinpath( outdir, "index.md"), "w") do lio
         println( lio, DUMP_FILE_DESCRIPTION )
     end
     fname = joinpath( outdir, "short_income_summary.csv")
     CSV.write( fname, summary.short_income_summary;delim=',' )
+
     fname = joinpath( outdir, "incomes-histogram-df.csv")
     CSV.write( fname, summary.income_hists_df )
+
     fname = joinpath( outdir, "poverty-inequality-metrs-child-poverty.md")
     io = open( fname, "w")    
     for fno in 1:ns
@@ -1663,6 +1635,7 @@ function dump_summaries( settings :: Settings, summary :: NamedTuple )
             CSV.write( joinpath( outdir, "gain-lose-by-num-children-examples-$(fno)-vs-1.csv"), summary.gain_lose[fno].children_examples)
             CSV.write( joinpath( outdir, "gain-lose-by-household Type-examples-$(fno)-vs-1.csv"), summary.gain_lose[fno].hhtype_examples)
             CSV.write( joinpath( outdir, "gain-lose-by-region-examples-$(fno)-vs-1.csv"), summary.gain_lose[fno].reg_examples)
+            CSV.write( joinpath( outdir, "poverty-transition-matrix-$(fno)-vs-1.csv"), summary.povtrans_matrix_df[fno])
         end
         
         CSV.write( joinpath( outdir, "deciles-$(fno).csv"), summary.deciles_df[fno])
@@ -1672,7 +1645,9 @@ function dump_summaries( settings :: Settings, summary :: NamedTuple )
         end
         if settings.do_marginal_rates
             write_hist(joinpath( outdir, "metrs-histogram-$(fno).csv"), summary.metrs[fno] )
+            CSV.write(  joinpath( outdir, "metrs-transition-matrix-df-$(fno).csv" ), summary.metrs[fno].transmat_df )
         end
+
     end
     close(io)
     if settings.do_legal_aid
@@ -1681,6 +1656,12 @@ function dump_summaries( settings :: Settings, summary :: NamedTuple )
     if settings.do_marginal_rates
         CSV.write( joinpath( outdir, "metrs-histogram-df.csv"), summary.metrs_df )
     end
+end
+
+function dump_summaries( settings :: Settings, summary :: NamedTuple )
+    outdir = joinpath( settings.output_dir, basiccensor( settings.run_name ))
+    mkpath( outdir )
+    dump_summaries( outdir, settings, summary )
 end
 
 """
@@ -1692,18 +1673,30 @@ function restore_frames( dir :: AbstractString, num_systems :: Integer )::NamedT
         bu = DataFrame[],
         indiv = DataFrame[],
         income = DataFrame[],
-        behavioural_results = DataFrame[])
+        behavioural_results = DataFrame[],
+        legalaid = [])
     for fno in 1:num_systems
         fname = joinpath( dir, "hh_$(fno).csv")
-        push!(frames.hh, CSV.File( fname, delim=',') |> DataFrame )
+        hf = CSV.File( fname, delim=',') |> DataFrame
+        hf.hid = BigInt.(hf.hid ) # force indexes to be bigints
+        push!(frames.hh, hf )
         fname = joinpath( dir, "bu_$(fno).csv")
-        push!( frames.bu, CSV.File( fname; delim=',') |> DataFrame )
+        bf = CSV.File( fname; delim=',') |> DataFrame
+        push!( frames.bu, bf )
         fname = joinpath( dir, "indiv_$(fno).csv")
-        push!( frames.indiv, CSV.File( fname; delim=',') |> DataFrame )
+        idf = CSV.File( fname; delim=',') |> DataFrame
+        idf.hid = BigInt.(idf.hid)
+        idf.pid = BigInt.(idf.pid)
+        push!( frames.indiv, idf )
         fname = joinpath( dir, "income_$(fno).csv")
-        push!( frames.income, CSV.File( fname; delim=',') |> DataFrame )
+        iif = CSV.File( fname; delim=',') |> DataFrame
+        iif.hid = BigInt.(iif.hid)
+        iif.pid = BigInt.(iif.pid)
+        push!( frames.income, iif )
         fname = joinpath( dir, "sfc-behavioural_adjustments-$(fno)-vs-1.csv")
         push!(frames.behavioural_results, CSV.File( fname; delim=',') |> DataFrame )
+        # empty reference here
+        push!(frames.legalaid, nothing ) # just needed for summaries
     end
     return frames;
 end
@@ -1726,7 +1719,6 @@ function dump_frames(
     frames :: NamedTuple;
     append :: Bool = false )
     ns = size( frames.indiv )[1] # num systems
-    mkpath( outdir )
     for fno in 1:ns
         fname = joinpath( outdir, "hh_$(fno).csv")
         CSV.write( fname, frames.hh[fno]; append=append,delim=',')
@@ -1748,6 +1740,7 @@ function dump_frames(
     frames :: NamedTuple;
     append :: Bool = false )
     outdir = joinpath( settings.output_dir, basiccensor( settings.run_name ))
+    mkpath( outdir )
     dump_frames( outdir, frames; append=append )
 end
 
